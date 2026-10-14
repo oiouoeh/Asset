@@ -2,7 +2,7 @@
    Bump CACHE when you upload a new version (e.g. fam-v1.14) so phones pick up the update.
    Rule: only successful (200) responses are cached. If the server returns 404/5xx
    (e.g. repository deleted or Pages disabled), the cached app is served instead. */
-const CACHE = 'fam-v1.13.1';
+const CACHE = 'fam-v1.13.2';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 const good = res => res && res.ok && res.type === 'basic';
@@ -28,7 +28,11 @@ self.addEventListener('fetch', e => {
     e.respondWith((async () => {
       const cached = await caches.match('./index.html');
       try {
-        const res = await fetch(req, { cache: 'no-store' });
+        // Blocked/firewalled networks may hang instead of failing: give up after 3 s and use the cache
+        const res = await Promise.race([
+          fetch(req, { cache: 'no-store' }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), cached ? 3000 : 15000))
+        ]);
         if (good(res)) {
           const copy = res.clone();
           caches.open(CACHE).then(c => c.put('./index.html', copy));
