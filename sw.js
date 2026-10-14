@@ -1,7 +1,11 @@
 /* Family Asset Manager - Service Worker
-   Bump CACHE when you upload a new version (e.g. fam-v1.14) so phones pick up the update. */
-const CACHE = 'fam-v1.13';
+   Bump CACHE when you upload a new version (e.g. fam-v1.14) so phones pick up the update.
+   Rule: only successful (200) responses are cached. If the server returns 404/5xx
+   (e.g. repository deleted or Pages disabled), the cached app is served instead. */
+const CACHE = 'fam-v1.13.1';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
+
+const good = res => res && res.ok && res.type === 'basic';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
@@ -18,21 +22,36 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
-  // HTML: network-first (always get latest when online), fall back to cache offline
+
+  // HTML: network-first; use cache when offline OR when the server answers with an error (404 etc.)
   if (req.mode === 'navigate' || req.destination === 'document') {
-    e.respondWith(
-      fetch(req).then(res => {
-        const copy = res.clone();
-        caches.open(CACHE).then(c => c.put('./index.html', copy));
-        return res;
-      }).catch(() => caches.match('./index.html'))
-    );
+    e.respondWith((async () => {
+      const cached = await caches.match('./index.html');
+      try {
+        const res = await fetch(req, { cache: 'no-store' });
+        if (good(res)) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put('./index.html', copy));
+          return res;
+        }
+        return cached || res;
+      } catch (err) {
+        return cached || Response.error();
+      }
+    })());
     return;
   }
-  // Other assets: cache-first
-  e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => {
-    const copy = res.clone();
-    caches.open(CACHE).then(c => c.put(req, copy));
-    return res;
-  })));
+
+  // Other assets: cache-first, never store error responses
+  e.respondWith((async () => {
+    const hit = await caches.match(req);
+    if (hit) return hit;
+    try {
+      const res = await fetch(req);
+      if (good(res)) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+      return res;
+    } catch (err) {
+      return Response.error();
+    }
+  })());
 });
